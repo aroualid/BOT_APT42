@@ -12,27 +12,46 @@ CTF_CATEGORY = "CTF"
 ARCHIVE_CATEGORY = "archive"
 FILE = "events.json"
 
-# Rôles (en plus des administrateurs) autorisés à utiliser /close.
+# Rôles (en plus des administrateurs) autorisés à utiliser /close et /close_ctf.
 # Mets les noms exacts de tes rôles, la casse n'a pas d'importance.
-CLOSE_ROLES = ["Ad;in", "Bureau"]
+CLOSE_ROLES = ["Admin", "Bureau"]
+
+# Tags prédéfinis du forum (20 caractères max chacun, 20 tags max)
+FORUM_TAGS = ["Web", "Crypto", "Pwn", "Reverse", "Forensics", "OSINT", "Stégano", "Misc"]
+DONE_TAG = "Résolu"  # ajouté automatiquement par /close
 
 intents = discord.Intents.default()
 intents.members = True  # à activer aussi dans le portail développeurs
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# {eventId: {"role": roleId | None, "channel": channelId, "closed": bool}}
+# {eventId: {"role": roleId | None, "channel": forumId, "closed": bool}}
 store = {}
 if os.path.exists(FILE):
     with open(FILE, encoding="utf-8") as f:
         store = json.load(f)
 
-lock = asyncio.Lock()  # évite de créer deux fois le même salon
+lock = asyncio.Lock()  # évite de créer deux fois le même forum
 
 
 def save():
     with open(FILE, "w", encoding="utf-8") as f:
         json.dump(store, f, indent=2)
+
+
+def find_key(forum_id: int):
+    """Retrouve l'ID d'événement à partir de l'ID du forum."""
+    for key, entry in store.items():
+        if entry["channel"] == forum_id:
+            return key
+    return None
+
+
+def is_allowed(member: discord.Member) -> bool:
+    allowed = {name.lower() for name in CLOSE_ROLES}
+    return member.guild_permissions.administrator or any(
+        role.name.lower() in allowed for role in member.roles
+    )
 
 
 async def get_or_create_category(guild: discord.Guild, name: str):
@@ -43,7 +62,7 @@ async def get_or_create_category(guild: discord.Guild, name: str):
 
 
 async def setup(event: discord.ScheduledEvent) -> dict:
-    """Crée le rôle et le salon privé (dans CTF) d'un événement, une seule fois."""
+    """Crée le rôle et le forum privé (dans CTF) d'un événement, une seule fois."""
     async with lock:
         key = str(event.id)
         if key in store:
@@ -59,19 +78,28 @@ async def setup(event: discord.ScheduledEvent) -> dict:
         )
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, send_messages_in_threads=True
+            ),
             guild.me: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, manage_channels=True
+                view_channel=True,
+                send_messages=True,
+                send_messages_in_threads=True,
+                manage_threads=True,
+                manage_channels=True,
             ),
         }
-        channel = await guild.create_text_channel(
+        tags = [discord.ForumTag(name=name) for name in FORUM_TAGS + [DONE_TAG]]
+        forum = await guild.create_forum(
             event.name[:100],
             category=category,
             overwrites=overwrites,
+            topic="Un post par challenge. Choisis un tag pour la catégorie.",
+            available_tags=tags,
             reason=f"Événement {event.name}",
         )
 
-        store[key] = {"role": role.id, "channel": channel.id, "closed": False}
+        store[key] = {"role": role.id, "channel": forum.id, "closed": False}
         save()
         return store[key]
 
@@ -121,35 +149,55 @@ async def on_scheduled_event_user_remove(event, user):
     await take_role(event, user)
 
 
-@tree.command(name="close", description="Archive le salon de cet événement")
+@tree.command(name="close", description="Ferme ce post (challenge terminé)")
 @app_commands.guild_only()
 async def close(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    # Réservé aux administrateurs et aux rôles de CLOSE_ROLES
-    allowed = {name.lower() for name in CLOSE_ROLES}
-    user = interaction.user
-    is_allowed = user.guild_permissions.administrator or any(
-        role.name.lower() in allowed for role in user.roles
-    )
-    if not is_allowed:
+    if not is_allowed(interaction.user):
+        return await interaction.followup.send(
+            "Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True
+        )
+
+    thread = interaction.channel
+    if not isinstance(thread, discord.Thread) or find_key(thread.parent_id) is None:
+        return await interaction.followup.send(
+            "À utiliser dans un post d'un forum d'événement.", ephemeral=True
+        )
+
+    forum = thread.parent or interaction.guild.get_channel(thread.parent_id)
+    tags = list(thread.applied_tags)
+    done = discord.utils.get(forum.available_tags, name=DONE_TAG)
+    if done and done not in tags:
+        tags.append(done)
+
+    # On répond avant d'archiver, car on est dans le post qu'on ferme
+    await interaction.followup.send("Post fermé.", ephemeral=True)
+    await thread.edit(applied_tags=tags[:5], locked=True, archived=True)
+
+
+@tree.command(name="close_ctf", description="Archive tout le forum de ce CTF")
+@app_commands.guild_only()
+async def close_ctf(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    if not is_allowed(interaction.user):
         return await interaction.followup.send(
             "Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True
         )
 
     guild = interaction.guild
     channel = interaction.channel
+    # La commande se lance dans un post : on remonte au forum
+    forum_id = channel.parent_id if isinstance(channel, discord.Thread) else channel.id
 
-    # Retrouve l'événement à partir du salon où la commande est lancée
-    key = next(
-        (k for k, v in store.items() if v["channel"] == channel.id and not v["closed"]),
-        None,
-    )
-    if key is None:
+    key = find_key(forum_id)
+    if key is None or store[key]["closed"]:
         return await interaction.followup.send(
-            "Ce salon n'est pas un salon d'événement actif.", ephemeral=True
+            "Ce n'est pas un forum d'événement actif.", ephemeral=True
         )
     entry = store[key]
+    forum = guild.get_channel(forum_id)
 
     archive = await get_or_create_category(guild, ARCHIVE_CATEGORY)
 
@@ -158,27 +206,29 @@ async def close(interaction: discord.Interaction):
         guild.default_role: discord.PermissionOverwrite(
             view_channel=True,
             read_message_history=True,
-            send_messages=False,
+            send_messages=False,  # créer des posts
+            send_messages_in_threads=False,  # répondre dans les posts
             add_reactions=False,
-            create_public_threads=False,
-            create_private_threads=False,
-            send_messages_in_threads=False,
         ),
         guild.me: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True, manage_channels=True
+            view_channel=True,
+            send_messages=True,
+            send_messages_in_threads=True,
+            manage_threads=True,
+            manage_channels=True,
         ),
     }
-    await channel.edit(category=archive, overwrites=overwrites, reason="Salon archivé")
+    await forum.edit(category=archive, overwrites=overwrites, reason="Forum archivé")
 
     role = guild.get_role(entry["role"])
     if role:
-        await role.delete(reason="Salon archivé")
+        await role.delete(reason="Forum archivé")
 
     entry["closed"] = True
     entry["role"] = None
     save()
 
-    await interaction.followup.send("Salon archivé.", ephemeral=True)
+    await interaction.followup.send("Forum archivé.", ephemeral=True)
 
 
 _ready_done = False
@@ -193,7 +243,7 @@ async def on_ready():
     _ready_done = True
 
     for guild in client.guilds:
-        # Enregistre /close tout de suite sur ce serveur
+        # Enregistre les commandes tout de suite sur ce serveur
         tree.copy_global_to(guild=guild)
         await tree.sync(guild=guild)
 
