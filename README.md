@@ -6,10 +6,16 @@ Bot Discord permettant de gérer simplement les événements CTF et leurs challe
 
 1. Créer une application sur le [Discord Developer Portal](https://discord.com/developers/applications).
 2. Activer l'intent **Server Members Intent** dans les paramètres du bot.
-3. Inviter le bot sur le serveur avec les scopes `bot` et `applications.commands`, ainsi que les permissions de gestion des rôles, salons et fils.
-4. Placer le rôle du bot suffisamment haut dans la hiérarchie des rôles.
+3. Inviter le bot sur le serveur avec les scopes `bot` et `applications.commands`, ainsi que les permissions suivantes :
+   - **View Channels**
+   - **Manage Channels**
+   - **Manage Roles**
+   - **Send Messages**
+   - **Send Messages in Threads**
+   - **Manage Threads**
+   - **Read Message History**
+4. Placer le rôle du bot suffisamment haut dans la hiérarchie des rôles pour qu'il puisse gérer les rôles qu'il crée.
 5. Configurer le token dans le fichier `config` :
-
    ```dotenv
    TOKEN=your_discord_bot_token
    ```
@@ -58,4 +64,3 @@ python main.py
 ```
 
 Les événements et leurs informations sont conservés dans `events.json`. Au redémarrage, le bot resynchronise les commandes et restaure les rôles des participants aux événements actifs.
-
