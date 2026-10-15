@@ -14,8 +14,7 @@ Bot Discord permettant de gérer simplement les événements CTF et leurs challe
    - **Send Messages in Threads**
    - **Manage Threads**
    - **Read Message History**
-4. Placer le rôle du bot suffisamment haut dans la hiérarchie des rôles pour qu'il puisse gérer les rôles qu'il crée.
-5. Configurer le token dans le fichier `config` :
+4. Configurer le token dans le fichier `config` :
    ```dotenv
    TOKEN=your_discord_bot_token
    ```
